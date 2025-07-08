@@ -1,0 +1,42 @@
+syntax = "proto3";
+package godis;
+
+option go_package = "github.com/jscottransom/fringe";
+
+enum State {
+        ALIVE = 0;
+        SUSPECT = 1;
+        DEAD = 2;
+        LEFT = 3;
+}
+
+message MembershipUpdate {
+    string node_id = 1;
+    string address = 2;
+    uint64 incarnation = 3;
+    State state = 4;   
+}
+
+
+message Ping {
+   string sender_id = 1;
+   string sender_address = 2;
+   repeated MembershipUpdate updates = 3;
+}
+
+message PingReq {
+   string target_id = 1;
+   string target_address = 2;
+   string request_id = 3;
+   string request_address = 4;
+   repeated MembershipUpdate updates = 5;
+}
+
+message Ack {
+   string sender_id = 1;
+   string sender_address = 2;
+   uint64 incarnation = 3;
+   string target_id = 4;
+   repeated MembershipUpdate updates = 5;
+}
+
