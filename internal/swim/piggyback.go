@@ -1,14 +1,13 @@
 package swim
 
 import (
-	"fmt"
 	serial "github.com/jscottransom/fringe/internal/proto"
 	"time"
 )
 
 const maxDelivery = 3 // Tunable, but will keep low for now
 type Entry struct {
-	update        serial.MembershipUpdate
+	update        *serial.MembershipUpdate
 	Expiry        time.Time
 	DeliveryCount int
 	SeenPeers     map[string]bool
@@ -83,6 +82,7 @@ func (p *PiggyBackQueue) GetEntries(nodeID string, max int) []*Entry {
 		if !seen && entry.DeliveryCount < maxDelivery {
 			entries = append(entries, p.Entries[i])
 			entry.DeliveryCount++
+			entry.SeenPeers[nodeID] = true
 		}
 
 	}

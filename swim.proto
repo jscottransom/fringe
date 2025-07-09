@@ -21,10 +21,13 @@ message MembershipUpdate {
 message Ping {
    string sender_id = 1;
    string sender_address = 2;
-   repeated MembershipUpdate updates = 3;
+   string target_address = 3;
+   repeated MembershipUpdate updates = 4;
 }
 
 message PingReq {
+   string sender_id = 1;
+   string sender_address = 2;
    string target_id = 1;
    string target_address = 2;
    string request_id = 3;
@@ -33,10 +36,11 @@ message PingReq {
 }
 
 message Ack {
-   string sender_id = 1;
-   string sender_address = 2;
-   uint64 incarnation = 3;
-   string target_id = 4;
-   repeated MembershipUpdate updates = 5;
+   string response = 1;
+   string sender_id = 2;
+   string sender_address = 3;
+   uint64 incarnation = 4;
+   string target_id = 5;
+   repeated MembershipUpdate updates = 6;
 }
 
