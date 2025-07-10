@@ -44,3 +44,10 @@ message Ack {
    repeated MembershipUpdate updates = 6;
 }
 
+message Envelope {
+  oneof msg {
+    Ping ping = 1;
+    Ack ack = 2;
+    PingReq ping_req = 3;
+  }
+}

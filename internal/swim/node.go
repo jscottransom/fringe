@@ -156,43 +156,51 @@ func (n *Node) initUDPStream(addr string) (*quic.Stream, error) {
 
 // Send a Ping to a Node
 func (n *Node) sendPing(ping *serial.Ping) error {
-
+	// Open stream to target
 	stream, err := n.initUDPStream(ping.TargetAddress)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open stream to %s: %w", ping.TargetAddress, err)
 	}
+	defer stream.Close()
 
-	// Write data to the stream
-	// Serialize (marshal) the ping message
-	message, err := proto.Marshal(ping)
-	_, err = stream.Write([]byte(message))
+	
+	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+
+	data, err := proto.Marshal(ping)
 	if err != nil {
-		log.Fatalf("failed to write to stream: %v", err)
-		return err
+		return fmt.Errorf("failed to marshal ping: %w", err)
 	}
-	fmt.Println("Sent Ping")
 
-	// Read response from the stream
+	
+	if _, err := stream.Write(data); err != nil {
+		return fmt.Errorf("failed to write ping to %s: %w", ping.TargetAddress, err)
+	}
+	fmt.Printf("Ping sent to %s\n", ping.TargetAddress)
+
+	
 	resp, err := io.ReadAll(stream)
 	if err != nil {
-		log.Fatalf("failed to read from stream: %v", err)
-		return err
-	}
-	var ack serial.Ack
-	err = proto.Unmarshal(resp, &ack)
-	if err != nil {
-		log.Fatalf("failed to unmarshal response: %v", err)
-		return err
+		return fmt.Errorf("failed to read response from %s: %w", ping.TargetAddress, err)
 	}
 
-	fmt.Println(ack.Response)
-	return nil
+	var ack serial.Ack
+	if err := proto.Unmarshal(resp, &ack); err == nil {
+		return n.handleAck(&ack)
+	}
+
+	var nack serial.Nack
+	if err := proto.Unmarshal(resp, &nack); err == nil {
+		return n.handleNack(&nack)
+	}
+
+	return fmt.Errorf("received unknown or invalid response from %s", ping.TargetAddress)
 }
 
 func (n *Node) handlePing(sess *quic.Conn) {
 
 	stream, err := sess.AcceptStream(context.Background())
 	if err != nil {
+		log.Printf("failed to accept stream: %v", err)
 		return
 	}
 
@@ -201,15 +209,21 @@ func (n *Node) handlePing(sess *quic.Conn) {
 
 		data, err := io.ReadAll(stream)
 		if err != nil {
+			log.Printf("failed to read stream: %v", err)
 			return
 		}
 
 		var ping serial.Ping
 		if err := proto.Unmarshal(data, &ping); err != nil {
+			log.Printf("failed to Unmarshal Ping: %v", err)
 			return
 		}
 
-		fmt.Printf("Received Ping from %s\n", ping.SenderId)
+		if ping.SenderId == n.NodeId {
+			log.Printf("ignoring ping from self (%s)", ping.SenderId)
+			return
+		}
+		log.Printf("Received Ping from %s\n", ping.SenderId)
 
 		// 2. Build and send Ack response
 
@@ -224,15 +238,25 @@ func (n *Node) handlePing(sess *quic.Conn) {
 
 		ack := &serial.Ack{
 			Response:      "Ack",
-			SenderId:      ping.SenderId,
-			SenderAddress: ping.SenderAddress,
+			SenderId:      n.NodeId,
+			SenderAddress: n.MemberTable.Members[n.NodeId].Address,
 			Incarnation:   n.MemberTable.Members[n.NodeId].Incarnation,
-			TargetId:      n.NodeId,
+			TargetId:      ping.SenderId,
 			Updates:       updates,
 		}
 
-		ackData, _ := proto.Marshal(ack)
-		stream.Write(ackData)
+		ackData, err := proto.Marshal(ack)
+		if err != nil {
+			log.Printf("failed to marshal ack: %v", err)
+			return
+		}
+		if _, err := stream.Write(ackData); err != nil {
+			log.Printf("failed to write ack to stream: %v", err)
+			return
+		}
+
+		log.Printf("Sent Ack to %s", ping.SenderId)
+
 	}()
 }
 
@@ -343,5 +367,17 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 
 		ackData, _ := proto.Marshal(ack)
 		stream.Write(ackData)
+		
 	}()
 }
+
+
+// Generic handler to forward response type
+// switch m := env.Msg.(type) {
+// case *serial.Envelope_Ping:
+//     handlePing(m.Ping)
+// case *serial.Envelope_Ack:
+//     handleAck(m.Ack)
+// case *serial.Envelope_PingReq:
+//     handlePingReq(m.PingReq)
+// }
