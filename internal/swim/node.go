@@ -12,6 +12,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"errors"
 )
 
 const PeerTTL = 60 * time.Second
@@ -64,7 +65,7 @@ func (n *NodeTable) addPeer(nodeID string, peer *Peer) {
 }
 
 // Update a Peer in the NodeTable
-func (n *NodeTable) updatePeer(update serial.MembershipUpdate) {
+func (n *NodeTable) updatePeer(update *serial.MembershipUpdate) {
 	// Safe access, prevent multiple current updates
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -145,6 +146,8 @@ func (n *Node) initUDPStream(addr string) (*quic.Stream, error) {
 		log.Fatalf("failed to open stream: %v", err)
 		return nil, nil
 	}
+
+
 	defer stream.Close()
 
 	return stream, nil
@@ -173,11 +176,13 @@ func (n *Node) sendPing(ping *serial.Ping) error {
 	resp, err := io.ReadAll(stream)
 	if err != nil {
 		log.Fatalf("failed to read from stream: %v", err)
+		return err
 	}
 	var ack serial.Ack
 	err = proto.Unmarshal(resp, &ack)
 	if err != nil {
 		log.Fatalf("failed to unmarshal response: %v", err)
+		return err
 	}
 
 	fmt.Println(ack.Response)
@@ -231,16 +236,18 @@ func (n *Node) handlePing(sess *quic.Conn) {
 	}()
 }
 
+// Send a Ping to a Node
 func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
 
-	stream, err := n.initUDPStream(pingReq.TargetAddress)
+	// Send a PingReq for a given node, to a known, alive node
+	stream, err := n.initUDPStream(pingReq.RequestAddress)
 	if err != nil {
 		return err
 	}
 
 	// Write data to the stream
-	// Serialize (marshal) the ping message
-	message, err := proto.Marshal(ping)
+	// Serialize (marshal) the pingReq message. 
+	message, err := proto.Marshal(pingReq)
 	_, err = stream.Write([]byte(message))
 	if err != nil {
 		log.Fatalf("failed to write to stream: %v", err)
@@ -252,13 +259,89 @@ func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
 	resp, err := io.ReadAll(stream)
 	if err != nil {
 		log.Fatalf("failed to read from stream: %v", err)
+		return err
 	}
-	ack := &serial.Ack{}
-	err = proto.Unmarshal(resp, ack)
+	var ack serial.Ack
+	err = proto.Unmarshal(resp, &ack)
 	if err != nil {
 		log.Fatalf("failed to unmarshal response: %v", err)
+		return err
 	}
 
-	fmt.Println(ack.Response)
+	// fmt.Println(ack.Response)
+	if ack.Response == "Nack" {
+		return errors.New("Target Node can't be reached.")
+	}
 	return nil
+}
+
+func (n *Node) handlePingReq(sess *quic.Conn) {
+
+	stream, err := sess.AcceptStream(context.Background())
+	if err != nil {
+		return
+	}
+
+	go func() {
+		defer stream.Close()
+
+		data, err := io.ReadAll(stream)
+		if err != nil {
+			return
+		}
+
+		var pingReq serial.PingReq
+		if err := proto.Unmarshal(data, &pingReq); err != nil {
+			return
+		}
+
+		fmt.Printf("Received PingReq from %s\n", pingReq.SenderId)
+
+		// 2. Ping the Target node 
+
+		// Serialize Ping Message to send across the network
+		// Construct serial updates from the update queue
+		var updates []*serial.MembershipUpdate
+		entries := n.Queue.GetEntries(n.NodeId, 5)
+		for _, entry := range entries {
+			update := entry.update
+			updates = append(updates, update)
+		}
+		
+		ping := &serial.Ping{
+			SenderId: n.NodeId,
+			SenderAddress: pingReq.RequestAddress,
+			TargetAddress: pingReq.TargetAddress,
+			Updates: updates,
+		}
+		err = n.sendPing(ping)
+		if err != nil {
+			// Construct a Nack to send back to the original requestor
+			nack := &serial.Ack{
+			Response:      "Nack",
+			SenderId:      ping.SenderId,
+			SenderAddress: ping.SenderAddress,
+			Incarnation:   n.MemberTable.Members[n.NodeId].Incarnation,
+			TargetId:      pingReq.SenderId,
+			Updates:       updates,
+		}
+
+		nackData, _ := proto.Marshal(nack)
+		stream.Write(nackData)
+		} 
+
+		// Otherwise send the Ack to the original requestor
+
+		ack := &serial.Ack{
+			Response:      "Ack",
+			SenderId:      n.NodeId,
+			SenderAddress: pingReq.RequestAddress,
+			Incarnation:   n.MemberTable.Members[n.NodeId].Incarnation,
+			TargetId:      ping.SenderId,
+			Updates:       updates,
+		}
+
+		ackData, _ := proto.Marshal(ack)
+		stream.Write(ackData)
+	}()
 }

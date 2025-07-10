@@ -28,11 +28,11 @@ message Ping {
 message PingReq {
    string sender_id = 1;
    string sender_address = 2;
-   string target_id = 1;
-   string target_address = 2;
-   string request_id = 3;
-   string request_address = 4;
-   repeated MembershipUpdate updates = 5;
+   string target_id = 3;
+   string target_address = 4;
+   string request_id = 5;
+   string request_address = 6;
+   repeated MembershipUpdate updates = 7;
 }
 
 message Ack {
