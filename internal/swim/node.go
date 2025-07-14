@@ -266,43 +266,53 @@ func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
 	// Send a PingReq for a given node, to a known, alive node
 	stream, err := n.initUDPStream(pingReq.RequestAddress)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open stream to %s: %w", pingReq.RequestAddress, err)
 	}
+
+	defer stream.Close()
+
+	// Set deadline for establishiing a stream connection
+	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
 
 	// Write data to the stream
 	// Serialize (marshal) the pingReq message. 
 	message, err := proto.Marshal(pingReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Ping Req to %s: %w", pingReq.RequestAddress, err)
+	}
 	_, err = stream.Write([]byte(message))
 	if err != nil {
-		log.Fatalf("failed to write to stream: %v", err)
-		return err
+		return fmt.Errorf("failed to write to stream: %v", err)
 	}
-	fmt.Println("Sent Ping")
+	fmt.Printf("Ping sent to %s\n", pingReq.RequestAddress)
 
 	// Read response from the stream
 	resp, err := io.ReadAll(stream)
 	if err != nil {
-		log.Fatalf("failed to read from stream: %v", err)
-		return err
+		return fmt.Errorf("failed to read from stream: %v", err)
 	}
+	
+	// Handle Ack
 	var ack serial.Ack
-	err = proto.Unmarshal(resp, &ack)
-	if err != nil {
-		log.Fatalf("failed to unmarshal response: %v", err)
-		return err
+	if err := proto.Unmarshal(resp, &ack); err == nil {
+		return n.handleAck(&ack)
 	}
 
-	// fmt.Println(ack.Response)
-	if ack.Response == "Nack" {
-		return errors.New("Target Node can't be reached.")
+    // Handle Nack
+	var nack serial.Nack
+	if err := proto.Unmarshal(resp, &nack); err == nil {
+		return n.handleNack(&nack)
 	}
-	return nil
+
+	return fmt.Errorf("received unknown or invalid response from %s", ping.TargetAddress)
+	
 }
 
 func (n *Node) handlePingReq(sess *quic.Conn) {
 
 	stream, err := sess.AcceptStream(context.Background())
 	if err != nil {
+		log.Printf("failed to accept stream: %v", err)
 		return
 	}
 
@@ -311,15 +321,21 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 
 		data, err := io.ReadAll(stream)
 		if err != nil {
+			log.Printf("failed to read stream: %v", err)
 			return
 		}
 
 		var pingReq serial.PingReq
 		if err := proto.Unmarshal(data, &pingReq); err != nil {
+			log.Printf("failed to Unmarshal PingReq: %v", err)
 			return
 		}
 
-		fmt.Printf("Received PingReq from %s\n", pingReq.SenderId)
+		if pingReq.SenderId == n.NodeId {
+			log.Printf("ignoring ping from self (%s)", pingReq.SenderId)
+			return
+		}
+		log.Printf("Received Ping from %s\n", pingReq.SenderId)
 
 		// 2. Ping the Target node 
 
