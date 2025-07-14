@@ -155,9 +155,9 @@ func (n *Node) initUDPStream(addr string) (*quic.Stream, error) {
 // Send a Ping to a Node
 func (n *Node) sendPing(ping *serial.Ping) error {
 	// Open stream to target
-	stream, err := n.initUDPStream(ping.TargetAddress)
+	stream, err := n.initUDPStream(ping.TargetId)
 	if err != nil {
-		return fmt.Errorf("failed to open stream to %s: %w", ping.TargetAddress, err)
+		return fmt.Errorf("failed to open stream to %s: %w", ping.TargetId, err)
 	}
 	defer stream.Close()
 
@@ -169,13 +169,13 @@ func (n *Node) sendPing(ping *serial.Ping) error {
 	}
 
 	if _, err := stream.Write(data); err != nil {
-		return fmt.Errorf("failed to write ping to %s: %w", ping.TargetAddress, err)
+		return fmt.Errorf("failed to write ping to %s: %w", ping.TargetId, err)
 	}
-	fmt.Printf("Ping sent to %s\n", ping.TargetAddress)
+	fmt.Printf("Ping sent to %s\n", ping.TargetId)
 
 	resp, err := io.ReadAll(stream)
 	if err != nil {
-		return fmt.Errorf("failed to read response from %s: %w", ping.TargetAddress, err)
+		return fmt.Errorf("failed to read response from %s: %w", ping.TargetId, err)
 	}
 
 	var ack serial.Ack
@@ -335,7 +335,7 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 		ping := &serial.Ping{
 			SenderId:      n.NodeId,
 			SenderAddress: pingReq.RequestAddress,
-			TargetAddress: pingReq.TargetAddress,
+			TargetId:      pingReq.TargetId,
 			Updates:       updates,
 		}
 		err = n.sendPing(ping)
