@@ -24,15 +24,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ## Architecture Overview
 
- +-----------+                 +-----------+
-|   Node A  | <-------------> |   Node B  |
-|-----------|                 |-----------|
-| SWIM Gossip Layer           | SWIM Gossip Layer |
-|-----------|                 |-----------|
-| Merkle Tree Sync            | Merkle Tree Sync  |
-|-----------|                 |-----------|
-|   Local Data                |   Local Data      |
-+-----------+                 +-----------+
+![image](arch.png)
 
 
 
