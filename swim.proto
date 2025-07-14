@@ -21,8 +21,9 @@ message MembershipUpdate {
 message Ping {
    string sender_id = 1;
    string sender_address = 2;
-   string target_address = 3;
-   repeated MembershipUpdate updates = 4;
+   string target_id = 3;
+   string target_address = 4;
+   repeated MembershipUpdate updates = 5;
 }
 
 message PingReq {
