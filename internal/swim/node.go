@@ -65,7 +65,7 @@ func (n *NodeTable) addPeer(nodeID string, peer *Peer) {
 }
 
 // Update a Peer in the NodeTable
-func (n *NodeTable) updatePeer(update *serial.MembershipUpdate) {
+func (n *NodeTable) updatePeer(update *serial.MembershipUpdate, suspect bool) {
 	// Safe access, prevent multiple current updates
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -184,16 +184,11 @@ func (n *Node) sendPing(ping *serial.Ping) error {
 	}
 
 	var ack serial.Ack
-	if err := proto.Unmarshal(resp, &ack); err == nil {
-		return n.handleAck(&ack)
+	if err := proto.Unmarshal(resp, &ack); err != nil {
+		return n.handleAck(&ack, ping.TargetID)
+	} else {
+		return n.handleNack()
 	}
-
-	var nack serial.Nack
-	if err := proto.Unmarshal(resp, &nack); err == nil {
-		return n.handleNack(&nack)
-	}
-
-	return fmt.Errorf("received unknown or invalid response from %s", ping.TargetAddress)
 }
 
 func (n *Node) handlePing(sess *quic.Conn) {
@@ -385,6 +380,43 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 		stream.Write(ackData)
 		
 	}()
+}
+
+func (n *Node) handleAck(ack *serial.Ack) error {
+	// Locate the Peer update
+	for _, update := range ack.Updates {
+		// Match the Node ID to the ack sender, which is the Peer we want to update
+		if update.NodeId == ack.SenderId {
+			n.MemberTable.updatePeer(update, true) 
+		} 
+	}
+	return nil
+
+}
+// Handle a "non-response" from a Ping or a PingReq
+func (n *Node) handleNack(id string) error {
+	// Locate the Peer update
+	n.MemberTable.mu.Lock()
+	defer n.MemberTable.mu.Unlock()
+
+	// Set the appropriate status 
+	peer := n.MemberTable.Members[id]
+	
+	switch peer.State {
+	case Alive:
+		// If the state was previously Alive, we are now suspicious
+		peer.State = Suspected
+	case Suspected:
+		// Move to "Dead" if the TTL for the uspected status is met
+		if time.Since(peer.SinceStateUpdate) > PeerTTL {
+			peer.State = Dead
+		} else {
+			peer.State = Suspected
+		}
+	}
+	
+	return nil
+
 }
 
 
