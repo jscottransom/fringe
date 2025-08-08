@@ -239,7 +239,7 @@ The system is optimized for edge environments:
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ### Running Tests
 
@@ -276,7 +276,7 @@ cd cli && cargo test
 
 ---
 
-## 📚 Use Cases
+## Use Cases
 
 - **Sensor Data Synchronization:** Efficiently sync sensor readings across edge gateways
 - **Configuration Management:** Propagate configuration changes across distributed systems
