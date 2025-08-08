@@ -1,8 +1,6 @@
 # Fringe
 
-Fringe is a **distributed synchronization platform** purpose-built for edge computing environments.  
-It combines efficient Merkle tree–based data synchronization with robust SWIM-style gossip membership and failure detection.  
-This architecture enables lightweight, fault-tolerant, and eventually consistent data sharing across edge nodes with minimal coordination overhead.
+Fringe is a **distributed synchronization platform** purpose-built for edge computing environments. It combines efficient Merkle tree–based data synchronization with robust SWIM-style gossip membership and failure detection. This architecture enables lightweight, fault-tolerant, and eventually consistent data sharing across edge nodes with minimal coordination overhead.
 
 ---
 
