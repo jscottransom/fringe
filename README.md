@@ -6,7 +6,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ---
 
-## ✨ Features
+## Features
 
 - **SWIM-Style Gossip Membership**  
   Scalable, resilient cluster membership with periodic health checks and peer discovery.
@@ -28,7 +28,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ![image](arch.png)
 
@@ -58,18 +58,9 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ### Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/jscottransom/fringe.git
-   cd fringe
    ```
 
-2. **Install Go dependencies:**
-   ```bash
-   go mod tidy
-   ```
-
-3. **Build the Rust CLI:**
+1. **Build the Rust CLI:**
    ```bash
    cd cli
    cargo build --release
@@ -111,7 +102,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ---
 
-## 📚 CLI Usage
+## CLI Usage
 
 ### Node Management
 
@@ -147,7 +138,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ---
 
-## 🌐 Dashboard
+## Dashboard
 
 The dashboard provides a web interface for monitoring cluster state:
 
@@ -171,7 +162,7 @@ The dashboard provides a web interface for monitoring cluster state:
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
 ### Node Configuration
 
@@ -198,7 +189,7 @@ go run cmd/dashboard/main.go 9090
 
 ---
 
-## 📊 Monitoring & Metrics
+## Monitoring & Metrics
 
 ### Prometheus Metrics
 
@@ -217,7 +208,7 @@ The system exposes comprehensive metrics:
 
 ---
 
-## 🏗️ Architecture Details
+## Architecture Details
 
 ### SWIM Protocol Implementation
 
