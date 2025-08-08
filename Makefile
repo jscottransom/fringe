@@ -1,4 +1,4 @@
-.PHONY: build test clean run-node run-dashboard build-cli help
+.PHONY: build build-cli test clean run-node run-node-join run-dashboard bin
 
 all: build
 
