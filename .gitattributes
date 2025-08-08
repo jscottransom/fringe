@@ -22,7 +22,15 @@ Makefile linguist-vendored=true
 
 # Generated files (exclude from language stats)
 *.pb.go linguist-generated=true
+cli/target/ linguist-vendored=true
 target/ linguist-vendored=true
+*.d linguist-vendored=true
+*.rmeta linguist-vendored=true
+*.rlib linguist-vendored=true
+*.dylib linguist-vendored=true
+*.so linguist-vendored=true
+*.dll linguist-vendored=true
+*.exe linguist-vendored=true
 
 
 
