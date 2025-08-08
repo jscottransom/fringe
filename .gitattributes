@@ -15,7 +15,7 @@ Cargo.lock linguist-language=Rust
 *.sh linguist-language=Shell
 
 # Makefiles
-Makefile linguist-language=Makefile
+Makefile linguist-vendored=true
 
 # Documentation
 *.md linguist-documentation
