@@ -4,19 +4,35 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	serial "github.com/jscottransom/fringe/internal/proto"
-	quic "github.com/quic-go/quic-go"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
+
+	serial "github.com/jscottransom/fringe/internal/proto"
+	"github.com/prometheus/client_golang/prometheus"
+	quic "github.com/quic-go/quic-go"
+	"google.golang.org/protobuf/proto"
 )
 
 const PeerTTL = 60 * time.Second
 
-// Construct for a custom enum representing the Node Status
+// Prometheus metrics for SWIM protocol monitoring
+var (
+	pingLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fringe_ping_latency_seconds",
+		Help:    "Ping latency in seconds",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	messageCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "fringe_messages_total",
+		Help: "Total number of messages by type",
+	}, []string{"type"})
+)
+
+// NodeState represents the state of a node in the cluster
 type NodeState int
 
 const (
@@ -26,7 +42,7 @@ const (
 	Left
 )
 
-// Membership level data that we exchange across rounds and throughout the network
+// Peer represents membership level data exchanged across the network
 type Peer struct {
 	PeerID           string
 	Address          string
@@ -35,90 +51,196 @@ type Peer struct {
 	SinceStateUpdate time.Time
 }
 
-// Setup the basic structure of a Node.
-// Nodes contain a string UUID represent the process that should survive restarts and failures (stable)
-// Peer Table contains a mapping of these identifiers to Node Objects
+// Node represents a Fringe node in the SWIM cluster with member table and gossip protocol
 type Node struct {
 	NodeId      string
 	MemberTable *NodeTable
 	Queue       *PiggyBackQueue
+	Addr        string
+	Bootstrap   bool
+	mu          sync.RWMutex
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
-// Table mapping UUID to Node objects
+// NodeTable maps node IDs to Peer objects with thread-safe operations
 type NodeTable struct {
 	Members map[string]*Peer
-	mu      sync.Mutex
+	mu      sync.RWMutex
 }
 
-// Add a node
-func (n *NodeTable) addPeer(nodeID string, peer *Peer) {
-	// Safe access, prevent multiple current updates
+// Safely adds a peer to the member table with thread-safe access
+func (n *NodeTable) AddPeer(nodeID string, peer *Peer) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
-	// Add an entry to the NodeTable map
 	n.Members[nodeID] = peer
-
-	// Write success
-	fmt.Println("Successfully added %s to Node Table", nodeID)
+	fmt.Printf("Successfully added %s to Node Table", nodeID)
 }
 
-// Update a Peer in the NodeTable
-func (n *NodeTable) updatePeer(update *serial.MembershipUpdate, suspect bool) {
-	// Safe access, prevent multiple current updates
+// Safely updates a peer's state based on membership updates with incarnation handling
+func (n *NodeTable) UpdatePeer(update *serial.MembershipUpdate, suspect bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// For a given ID, check if the incarnation is less than the update.
-	// If it is, then the peer table incarnation syncs with the update
 	peer := n.Members[update.NodeId]
+	if peer == nil {
+		return
+	}
 
 	switch {
 	case peer.Incarnation > update.Incarnation:
 		return
-
 	case peer.Incarnation < update.Incarnation:
-		// Set the incarnation
 		peer.Incarnation = update.Incarnation
-
-		// Take the state from the update
-		// Construct a NodeState Enum
 		peer.State = NodeState(*update.State.Enum())
-
 	case peer.Incarnation == update.Incarnation:
-		// Take the state with the higher State Enum value
-		// This corresponds to the "Least Alive" principle of Node status
 		peer.State = max(peer.State, NodeState(*update.State.Enum()))
-
 	}
 
-	// Remove Suspect / Dead Nodes by checking the time since
 	for _, state := range []NodeState{Suspected, Dead, Left} {
 		if (peer.State == state) && (time.Since(peer.SinceStateUpdate) > PeerTTL) {
 			delete(n.Members, update.NodeId)
 		}
 	}
-
 }
 
-// Initialize a connection and stream over UDP using QUIC
-// Stream is closed once finished.
+// Returns a list of alive peers for ping selection with read-safe access
+func (n *NodeTable) GetAlivePeers() []*Peer {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var alivePeers []*Peer
+	for _, peer := range n.Members {
+		if peer.State == Alive {
+			alivePeers = append(alivePeers, peer)
+		}
+	}
+	return alivePeers
+}
+
+// Returns the number of alive nodes in the cluster with read-safe access
+func (n *NodeTable) GetClusterSize() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	count := 0
+	for _, peer := range n.Members {
+		if peer.State == Alive {
+			count++
+		}
+	}
+	return count
+}
+
+// Initializes and starts the SWIM gossip protocol with periodic ping and cleanup
+func (n *Node) StartGossip(ctx context.Context) {
+	n.ctx = ctx
+
+	go n.periodicPing()
+	go n.periodicCleanup()
+
+	log.Printf("Started gossip protocol for node %s", n.NodeId)
+}
+
+// Attempts to join an existing cluster via a known node with ping-based discovery
+func (n *Node) JoinCluster(knownNodeAddr string) error {
+	log.Printf("Joining cluster via node: %s", knownNodeAddr)
+
+	ping := &serial.Ping{
+		SenderId:      n.NodeId,
+		SenderAddress: n.Addr,
+		TargetId:      knownNodeAddr,
+		Updates:       []*serial.MembershipUpdate{},
+	}
+
+	return n.sendPing(ping)
+}
+
+// Sends periodic pings to random peers every 5 seconds for failure detection
+func (n *Node) periodicPing() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			n.sendRandomPing()
+		}
+	}
+}
+
+// Selects a random alive peer and sends a ping with piggybacked updates
+func (n *Node) sendRandomPing() {
+	alivePeers := n.MemberTable.GetAlivePeers()
+	if len(alivePeers) == 0 {
+		return
+	}
+
+	// Find first non-self peer
+	var targetPeer *Peer
+	for _, peer := range alivePeers {
+		if peer.PeerID != n.NodeId {
+			targetPeer = peer
+			break
+		}
+	}
+	if targetPeer == nil {
+		return
+	}
+
+	// Build updates
+	updates := n.Queue.GetEntries(n.NodeId, 5)
+	serialUpdates := make([]*serial.MembershipUpdate, len(updates))
+	for i, entry := range updates {
+		serialUpdates[i] = entry.Update
+	}
+
+	ping := &serial.Ping{
+		SenderId:      n.NodeId,
+		SenderAddress: n.Addr,
+		TargetId:      targetPeer.Address,
+		Updates:       serialUpdates,
+	}
+
+	start := time.Now()
+	if err := n.sendPing(ping); err != nil {
+		log.Printf("Failed to ping %s: %v", targetPeer.Address, err)
+	} else {
+		pingLatency.Observe(time.Since(start).Seconds())
+		messageCounter.WithLabelValues("ping").Inc()
+	}
+}
+
+// Removes expired entries and updates metrics every 10 seconds
+func (n *Node) periodicCleanup() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-ticker.C:
+			n.Queue.EvictEntry()
+		}
+	}
+}
+
+// Establishes a QUIC connection and stream to the target address with TLS configuration
 func (n *Node) initUDPStream(addr string) (*quic.Stream, error) {
-	// 1. Initialize a quic.Transport
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0}) // Use port 0 for an ephemeral port
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	if err != nil {
-		log.Fatalf("failed to listen UDP: %v", err)
-		return nil, nil
+		return nil, fmt.Errorf("failed to listen UDP: %w", err)
 	}
 	defer udpConn.Close()
 
-	tr := &quic.Transport{
-		Conn: udpConn,
-	}
+	tr := &quic.Transport{Conn: udpConn}
 	defer tr.Close()
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true, // Will revisit
+		InsecureSkipVerify: true,
 		NextProtos:         []string{"quic"},
 	}
 
@@ -126,42 +248,34 @@ func (n *Node) initUDPStream(addr string) (*quic.Stream, error) {
 		HandshakeIdleTimeout: 30 * time.Second,
 	}
 
-	fmt.Printf("Dialing QUIC connection to %s...\n", addr)
-
-	// Resolve the target address into a net addr object
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve address: %w", err)
+	}
 
 	conn, err := tr.Dial(context.Background(), udpAddr, tlsConf, quicConf)
 	if err != nil {
-		log.Fatalf("failed to dial QUIC connection: %v", err)
-		return nil, nil
+		return nil, fmt.Errorf("failed to dial QUIC connection: %w", err)
 	}
 	defer conn.CloseWithError(quic.ApplicationErrorCode(0), "")
-	fmt.Println("QUIC connection established!")
 
-	// Open a new stream for back and forth communication
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Fatalf("failed to open stream: %v", err)
-		return nil, nil
+		return nil, fmt.Errorf("failed to open stream: %w", err)
 	}
 
-	defer stream.Close()
-
 	return stream, nil
-
 }
 
-// Send a Ping to a Node
+// Sends a ping message to a target node and handles the response with timeout
 func (n *Node) sendPing(ping *serial.Ping) error {
-	// Open stream to target
 	stream, err := n.initUDPStream(ping.TargetId)
 	if err != nil {
 		return fmt.Errorf("failed to open stream to %s: %w", ping.TargetId, err)
 	}
 	defer stream.Close()
 
-	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+	stream.SetDeadline(time.Now().Add(3 * time.Second))
 
 	data, err := proto.Marshal(ping)
 	if err != nil {
@@ -171,7 +285,6 @@ func (n *Node) sendPing(ping *serial.Ping) error {
 	if _, err := stream.Write(data); err != nil {
 		return fmt.Errorf("failed to write ping to %s: %w", ping.TargetId, err)
 	}
-	fmt.Printf("Ping sent to %s\n", ping.TargetId)
 
 	resp, err := io.ReadAll(stream)
 	if err != nil {
@@ -186,8 +299,8 @@ func (n *Node) sendPing(ping *serial.Ping) error {
 	}
 }
 
+// Processes incoming ping messages and sends acknowledgments with piggybacked updates
 func (n *Node) handlePing(sess *quic.Conn) {
-
 	stream, err := sess.AcceptStream(context.Background())
 	if err != nil {
 		log.Printf("failed to accept stream: %v", err)
@@ -213,17 +326,12 @@ func (n *Node) handlePing(sess *quic.Conn) {
 			log.Printf("ignoring ping from self (%s)", ping.SenderId)
 			return
 		}
-		log.Printf("Received Ping from %s\n", ping.SenderId)
 
-		// 2. Build and send Ack response
-
-		// Construct serial updates from the update queue
-		var updates []*serial.MembershipUpdate
+		// Build updates
 		entries := n.Queue.GetEntries(n.NodeId, 5)
-		for _, entry := range entries {
-			update := entry.update
-			updates = append(updates, update)
-
+		updates := make([]*serial.MembershipUpdate, len(entries))
+		for i, entry := range entries {
+			updates[i] = entry.Update
 		}
 
 		ack := &serial.Ack{
@@ -245,28 +353,19 @@ func (n *Node) handlePing(sess *quic.Conn) {
 			log.Printf("failed to write ack to stream: %v", err)
 			return
 		}
-
-		log.Printf("Sent Ack to %s", ping.SenderId)
-
 	}()
 }
 
-// Send a Ping to a Node
+// Sends a ping request to probe a target node via an intermediate node with timeout
 func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
-
-	// Send a PingReq for a given node, to a known, alive node
 	stream, err := n.initUDPStream(pingReq.RequestAddress)
 	if err != nil {
 		return fmt.Errorf("failed to open stream to %s: %w", pingReq.RequestAddress, err)
 	}
-
 	defer stream.Close()
 
-	// Set deadline for establishiing a stream connection
-	_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+	stream.SetDeadline(time.Now().Add(3 * time.Second))
 
-	// Write data to the stream
-	// Serialize (marshal) the pingReq message.
 	message, err := proto.Marshal(pingReq)
 	if err != nil {
 		return fmt.Errorf("failed to marshal Ping Req to %s: %w", pingReq.RequestAddress, err)
@@ -275,9 +374,7 @@ func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
 	if err != nil {
 		return fmt.Errorf("failed to write to stream: %v", err)
 	}
-	fmt.Printf("Ping sent to %s\n", pingReq.RequestAddress)
 
-	// Read response from the stream
 	resp, err := io.ReadAll(stream)
 	if err != nil {
 		return fmt.Errorf("failed to read from stream: %v", err)
@@ -289,11 +386,10 @@ func (n *Node) sendPingReq(pingReq *serial.PingReq) error {
 	} else {
 		return n.handleNack(pingReq.RequestId)
 	}
-
 }
 
+// Processes incoming ping requests and forwards them to target nodes with piggybacked updates
 func (n *Node) handlePingReq(sess *quic.Conn) {
-
 	stream, err := sess.AcceptStream(context.Background())
 	if err != nil {
 		log.Printf("failed to accept stream: %v", err)
@@ -319,17 +415,12 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 			log.Printf("ignoring ping from self (%s)", pingReq.SenderId)
 			return
 		}
-		log.Printf("Received Ping from %s\n", pingReq.SenderId)
 
-		// 2. Ping the Target node
-
-		// Serialize Ping Message to send across the network
-		// Construct serial updates from the update queue
-		var updates []*serial.MembershipUpdate
+		// Build updates
 		entries := n.Queue.GetEntries(n.NodeId, 5)
-		for _, entry := range entries {
-			update := entry.update
-			updates = append(updates, update)
+		updates := make([]*serial.MembershipUpdate, len(entries))
+		for i, entry := range entries {
+			updates[i] = entry.Update
 		}
 
 		ping := &serial.Ping{
@@ -341,10 +432,7 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 		err = n.sendPing(ping)
 		if err != nil {
 			stream.Write([]byte("Nack"))
-
 		} else {
-			// Otherwise send the Ack to the original requestor
-
 			ack := &serial.Ack{
 				Response:      "Ack",
 				SenderId:      n.NodeId,
@@ -356,57 +444,38 @@ func (n *Node) handlePingReq(sess *quic.Conn) {
 
 			ackData, _ := proto.Marshal(ack)
 			stream.Write(ackData)
-
 		}
-
 	}()
 }
 
+// Processes acknowledgment messages and updates member table with received updates
 func (n *Node) handleAck(ack *serial.Ack) error {
-	// Locate the Peer update
 	for _, update := range ack.Updates {
-		// Match the Node ID to the ack sender, which is the Peer we want to update
 		if update.NodeId == ack.SenderId {
-			n.MemberTable.updatePeer(update, true)
+			n.MemberTable.UpdatePeer(update, true)
 		}
 	}
 	return nil
-
 }
 
-// Handle a "non-response" from a Ping or a PingReq
+// Processes negative acknowledgments and updates node states for failure detection
 func (n *Node) handleNack(id string) error {
-	// Locate the Peer update
 	n.MemberTable.mu.Lock()
 	defer n.MemberTable.mu.Unlock()
 
-	// Set the appropriate status
 	peer := n.MemberTable.Members[id]
+	if peer == nil {
+		return fmt.Errorf("peer %s not found", id)
+	}
 
 	switch peer.State {
 	case Alive:
-		// If the state was previously Alive, we are now suspicious
 		peer.State = Suspected
 	case Suspected:
-		// Move to "Dead" if the TTL for the uspected status is met
 		if time.Since(peer.SinceStateUpdate) > PeerTTL {
 			peer.State = Dead
-		} else {
-			peer.State = Suspected
 		}
 	}
 
 	return nil
-
 }
-
-
-// Generic handler to forward response type
-// switch m := env.Msg.(type) {
-// case *serial.Envelope_Ping:
-//     handlePing(m.Ping)
-// case *serial.Envelope_Ack:
-//     handleAck(m.Ack)
-// case *serial.Envelope_PingReq:
-//     handlePingReq(m.PingReq)
-// }
