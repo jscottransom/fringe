@@ -24,47 +24,5 @@ Makefile linguist-language=Makefile
 *.pb.go linguist-generated=true
 target/ linguist-vendored=true
 
-# Binary files
-*.png linguist-documentation
-*.jpg linguist-documentation
-*.jpeg linguist-documentation
-*.gif linguist-documentation
-*.ico linguist-documentation
-*.mov linguist-documentation
-*.mp4 linguist-documentation
-*.mp3 linguist-documentation
-*.flv linguist-documentation
-*.fla linguist-documentation
-*.swf linguist-documentation
-*.swc linguist-documentation
-*.pdf linguist-documentation
 
-# Archive files
-*.7z linguist-vendored
-*.bz2 linguist-vendored
-*.gz linguist-vendored
-*.rar linguist-vendored
-*.tar linguist-vendored
-*.zip linguist-vendored
 
-# OS generated files
-.DS_Store linguist-vendored
-Thumbs.db linguist-vendored
-ehthumbs.db linguist-vendored
-Desktop.ini linguist-vendored
-
-# IDE files
-.vscode/ linguist-vendored
-.idea/ linguist-vendored
-*.swp linguist-vendored
-*.swo linguist-vendored
-*~ linguist-vendored
-
-# Logs
-*.log linguist-vendored
-logs/ linguist-vendored
-
-# Dependencies
-vendor/ linguist-vendored
-node_modules/ linguist-vendored
-bower_components/ linguist-vendored
