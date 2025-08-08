@@ -48,7 +48,7 @@ This architecture enables lightweight, fault-tolerant, and eventually consistent
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Prerequisites
 
