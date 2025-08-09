@@ -56,9 +56,8 @@ Fringe is a distributed synchronization platform purpose-built for edge computin
 
 ### Installation
 
-   ```
-
-1. **Build the Rust CLI:**
+   
+**Build the Rust CLI:**
    ```bash
    cd cli
    cargo build --release
